@@ -17,8 +17,9 @@ var $done = function (r) {
   const TAB_CUT_WHITELIST = "0;2;4";
   const AD_ANY = ["AdResponseInfo", "InnerAdPromotionEventList", "InnerAdCommonPromotionEventActivityList", "LoadingConfig", "PreloadResourceInfo", "AdFeedInfo"];
   const DROP_MODULES = ["user_center_more_function"];
-  const AD_MODULE_IDS = ["outerPaster"];
-  const MARKERS = ["AdFeedInfo", "AdResponseInfo", "InnerAd", "LoadingConfig", "PreloadResourceInfo", "GetTabListRsp", "_ad", "teenager_popup_ctrl"].concat(DROP_MODULES);
+const AD_MODULE_IDS = ["outerPaster"];
+const FEED_MODULE_TAGS = ["waterfall_feeds_module_mergeid"];
+const MARKERS = ["AdFeedInfo", "AdResponseInfo", "InnerAd", "LoadingConfig", "PreloadResourceInfo", "GetTabListRsp", "_ad", "teenager_popup_ctrl"].concat(DROP_MODULES);
   const BLOCK_FUNCS = [
     "/trpc.business_splash.ad_ssp_splash.splashService/GetSplashPreload",
     "/trpc.business_splash.ad_ssp_splash.splashService/GetSplashRealtimePoll",
@@ -330,17 +331,50 @@ var $done = function (r) {
     for (const x of recs) if (x.f === f && x.w === 2) { const k = parse(b, x.vs, x.e); if (k) r.push(k); }
     return r;
   }
-  function adAtPath(b, kids) {
+  function blocksAt(b, kids) {
     let level = [kids];
+
     for (const f of [2, 5, 1]) {
-      const next = [];
-      for (const k of level) for (const c of kidsOf(b, k, f)) next.push(c);
-      level = next;
-      if (!level.length) return false;
+        const next = [];
+
+        for (const k of level) {
+            for (const c of kidsOf(b, k, f)) {
+                next.push(c);
+            }
+        }
+
+        level = next;
+
+        if (!level.length) {
+            break;
+        }
     }
-    for (const k of level) for (const x of k) if (x.f === 4 && x.w === 2 && anyName(b, x.vs, x.e) === "AdFeedInfo") return true;
-    return false;
-  }
+
+    return level;
+}
+
+function adBlock(b, k) {
+    return k.some(function (x) {
+        return x.f === 4 &&
+            x.w === 2 &&
+            anyName(b, x.vs, x.e) === "AdFeedInfo";
+    });
+}
+
+function adAtPath(b, kids) {
+    return blocksAt(b, kids).some(function (k) {
+        return adBlock(b, k);
+    });
+}
+
+function adOnlyAtPath(b, kids) {
+    const level = blocksAt(b, kids);
+
+    return level.length > 0 &&
+        level.every(function (k) {
+            return adBlock(b, k);
+        });
+}
   function wrapsAny(b, k) {
     if (anyName(b, k.vs, k.e)) return true;
     const w = parse(b, k.vs, k.e);
@@ -359,9 +393,25 @@ var $done = function (r) {
       if (t && id && DROP_MODULES.indexOf(t) >= 0 && /\.\d+\.\d+$/.test(id)) return true;
       if (t && id !== null && /^[a-z0-9_]+$/.test(t) && /(^ad_|_ad_|_ad$)/.test(t) && (id === "" || /\.\d+\.\d+$/.test(id))) return true;
     }
-    if ((!f1 || f1.e === f1.vs || AD_MODULE_IDS.indexOf(ascii(b, f1.vs, f1.e)) >= 0) && has("AdFeedInfo", x.vs, x.e) && adAtPath(b, kids)) return true;
-    return false;
-  }
+    if ((!f1 || f1.e === f1.vs || AD_MODULE_IDS.indexOf(ascii(b, f1.vs, f1.e)) >= 0) &&
+    has("AdFeedInfo", x.vs, x.e) &&
+    adAtPath(b, kids)) {
+    return true;
+}
+
+const f6 = kids.find(function (k) {
+    return k.f === 6 && k.w === 2;
+});
+
+if (f6 &&
+    FEED_MODULE_TAGS.indexOf(ascii(b, f6.vs, f6.e)) >= 0 &&
+    has("AdFeedInfo", x.vs, x.e) &&
+    adOnlyAtPath(b, kids)) {
+    return true;
+}
+
+return false;
+}
   function tabFix(b, x) {
     if (anyName(b, x.vs, x.e) !== "GetTabListRsp") return null;
     const rest = parse(b, ANYV, x.e);
@@ -616,32 +666,36 @@ var $done = function (r) {
     return jRebuild(b, s, e, fs, edits);
   }
   function fixPauseAd(b, s, e) {
-    const fs = jFields(b, s, e);
-    const outer = fs.find(x => x.tag === 1 && x.t === 9);
-    if (!outer) return null;
+  const fs = jFields(b, s, e), w = fs.find(x => x.tag === 1 && x.t === 10);
+  if (!w || b[w.e - 1] !== 0x0b) return null;
 
-    const os = outer.vs;
-    const oe = outer.e;
-    const of = jFields(b, os, oe);
-    const list = of.find(x => x.tag === 1 && x.t === 9);
+  const ws = jFields(b, w.vs, w.e - 1), l = ws.find(x => x.tag === 1 && x.t === 13);
+  if (!l) return null;
 
-    if (!list || jInt(b, list.vs) <= 0 ||
-        find(b, utf8("livemsg"), list.vs, list.e) < 0) {
-        return null;
-    }
+  jHead(b, l.vs);
+  const n = jInt(b, VP), ds = VP;
+  if (ds + n !== l.e) return null;
 
-    const le = new Map();
-    le.set(list, jSimpleList(1, concat([
-        new Uint8Array(jHeadEnc(0, 9)),
-        jIntEnc(0, 0)
-    ])));
+  const inner = jFields(b, ds, l.e), list = inner.find(x => x.tag === 0 && x.t === 9);
+  if (!list || jInt(b, list.vs) <= 0 || find(b, utf8("livemsg"), list.vs, list.e) < 0) return null;
 
-    const no = jRebuild(b, os, oe, of, le);
-    const oe2 = new Map();
-    oe2.set(outer, jSimpleList(1, no));
+  const le = new Map();
+  le.set(l, jSimpleList(1, concat([
+    new Uint8Array(jHeadEnc(0, 9)),
+    jIntEnc(0, 0)
+  ])));
 
-    return jRebuild(b, s, e, fs, oe2);
+  const nw = concat([
+    b.subarray(w.s, w.vs),
+    jRebuild(b, w.vs, w.e - 1, ws, le),
+    new Uint8Array([0x0b])
+  ]);
+
+  const edits = new Map();
+  edits.set(w, nw);
+  return jRebuild(b, s, e, fs, edits);
 }
+    
   function onJce(raw) {
     const b = raw, n = b.length;
     if (n < 100 || b[0] !== 0x13 || u32(b, 1) !== n || b[n - 1] !== 0x03) return null;
